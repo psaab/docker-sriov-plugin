@@ -24,6 +24,7 @@ func Run(ctx *cli.Context) error {
 	log.Printf("Mellanox sriov plugin started version=%v\n", version)
 	log.Printf("Ready to accept commands.\n")
 
+	go d.ValidatePersistentNetworks()
 	err = h.ServeUnix("sriov", 0)
 	if err != nil {
 		log.Fatal("Run app error: %s", err.Error())
