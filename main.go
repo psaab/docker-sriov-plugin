@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/codegangsta/cli"
+	"github.com/urfave/cli"
 	"github.com/docker/go-plugins-helpers/network"
 	"log"
 	"os"

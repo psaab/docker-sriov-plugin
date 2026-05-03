@@ -2,7 +2,7 @@ package driver
 
 import (
 	"fmt"
-	"github.com/Mellanox/sriovnet"
+	"github.com/k8snetworkplumbingwg/sriovnet"
 	"github.com/docker/go-plugins-helpers/network"
 	"log"
 	"strconv"
@@ -18,6 +18,12 @@ type pfDevice struct {
 	pfHandle      *sriovnet.PfNetdevHandle
 	state         string
 	nwUseRefCount int
+	// staleVFs holds VFs that sriovnet considers free but whose netdev is
+	// missing from the host netns -- typically because they're still inside
+	// a surviving container netns from a previous plugin run. They stay
+	// reserved here so AllocateVf doesn't hand them out, and are returned
+	// to the pool by reclaimStaleVFs once the netdev reappears.
+	staleVFs []*sriovnet.VfObj
 }
 
 type sriovNetwork struct {
@@ -151,7 +157,43 @@ func initSriovState(pfNetdevName string, dev *pfDevice) error {
 	}
 
 	dev.state = SRIOV_ENABLED
+	reserveStaleVFs(dev, pfNetdevName)
 	return nil
+}
+
+func reserveStaleVFs(dev *pfDevice, pfNetdevName string) {
+	var good []*sriovnet.VfObj
+	for {
+		vfObj, err := sriovnet.AllocateVf(dev.pfHandle)
+		if err != nil {
+			break
+		}
+		if sriovnet.GetVfNetdevName(dev.pfHandle, vfObj) == "" {
+			log.Printf("Reserving stale VF on %s (netdev not in host netns): %v\n", pfNetdevName, vfObj)
+			dev.staleVFs = append(dev.staleVFs, vfObj)
+		} else {
+			good = append(good, vfObj)
+		}
+	}
+	for _, vfObj := range good {
+		sriovnet.FreeVf(dev.pfHandle, vfObj)
+	}
+}
+
+func reclaimStaleVFs(dev *pfDevice) {
+	if len(dev.staleVFs) == 0 {
+		return
+	}
+	kept := dev.staleVFs[:0]
+	for _, vfObj := range dev.staleVFs {
+		if sriovnet.GetVfNetdevName(dev.pfHandle, vfObj) != "" {
+			log.Printf("Reclaiming stale VF (netdev returned to host netns): %v\n", vfObj)
+			sriovnet.FreeVf(dev.pfHandle, vfObj)
+		} else {
+			kept = append(kept, vfObj)
+		}
+	}
+	dev.staleVFs = kept
 }
 
 func (nw *sriovNetwork) DiscoverVFs(pfNetdevName string) error {
@@ -176,6 +218,7 @@ func (nw *sriovNetwork) DiscoverVFs(pfNetdevName string) error {
 
 func (nw *sriovNetwork) CreateEndpoint(r *network.CreateEndpointRequest) (*network.CreateEndpointResponse, error) {
 	var vfObj *sriovnet.VfObj
+	var devName string
 	var err error
 	var privileged bool
 
@@ -190,14 +233,31 @@ func (nw *sriovNetwork) CreateEndpoint(r *network.CreateEndpointRequest) (*netwo
 		return nil, fmt.Errorf("Invalid SRIOV configuration")
 	}
 
+	reclaimStaleVFs(dev)
+
 	if r.Interface.MacAddress != "" {
 		vfObj, err = sriovnet.AllocateVfByMacAddress(dev.pfHandle, r.Interface.MacAddress)
+		if err != nil {
+			return nil, fmt.Errorf("Fail to allocate VF err = %v", err)
+		}
+		devName = sriovnet.GetVfNetdevName(dev.pfHandle, vfObj)
+		if devName == "" {
+			sriovnet.FreeVf(dev.pfHandle, vfObj)
+			return nil, fmt.Errorf("VF for MAC %s has no host netdev (in use by another netns?)", r.Interface.MacAddress)
+		}
 	} else {
-		vfObj, err = sriovnet.AllocateVf(dev.pfHandle)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("Fail to allocate VF err = %v", err)
+		for {
+			vfObj, err = sriovnet.AllocateVf(dev.pfHandle)
+			if err != nil {
+				return nil, fmt.Errorf("Fail to allocate VF err = %v", err)
+			}
+			devName = sriovnet.GetVfNetdevName(dev.pfHandle, vfObj)
+			if devName != "" {
+				break
+			}
+			log.Printf("Skipping stale VF on %s (no host netdev): %v\n", nw.genNw.ndevName, vfObj)
+			dev.staleVFs = append(dev.staleVFs, vfObj)
+		}
 	}
 
 	if nw.vlan > 0 {
@@ -211,7 +271,7 @@ func (nw *sriovNetwork) CreateEndpoint(r *network.CreateEndpointRequest) (*netwo
 	}
 
 	if nw.roceHopLimit != 0 {
-		err = setRoceHopLimitWA(sriovnet.GetVfNetdevName(dev.pfHandle, vfObj), nw.roceHopLimit)
+		err = setRoceHopLimitWA(devName, nw.roceHopLimit)
 		if err != nil {
 			return nil, fmt.Errorf("Fail to set RoCE Hoplimit = %v", err)
 		}
@@ -220,7 +280,7 @@ func (nw *sriovNetwork) CreateEndpoint(r *network.CreateEndpointRequest) (*netwo
 	log.Printf("AllocVF PF [ %+v ] vf:%v\n", nw.genNw.ndevName, vfObj)
 
 	ndev := &ptEndpoint{
-		devName: sriovnet.GetVfNetdevName(dev.pfHandle, vfObj),
+		devName: devName,
 		vfObj:   vfObj,
 		Address: r.Interface.Address,
 	}

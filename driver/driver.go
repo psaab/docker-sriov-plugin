@@ -2,10 +2,8 @@ package driver
 
 import (
 	"fmt"
-	"github.com/Mellanox/sriovnet"
+	"github.com/k8snetworkplumbingwg/sriovnet"
 	"github.com/docker/go-plugins-helpers/network"
-	"github.com/docker/libnetwork/netlabel"
-	"github.com/docker/libnetwork/options"
 	"log"
 	"net"
 	"os"
@@ -148,10 +146,15 @@ func parseNetworkGenericOptions(data interface{}) (map[string]string, error) {
 	return options, err
 }
 
-func parseNetworkOptions(id string, option options.Generic) (map[string]string, error) {
+// libnetwork's options.Generic is `map[string]interface{}` and netlabel.GenericData
+// is the string "com.docker.network.generic". Inlined here to avoid the
+// libnetwork dep (which transitively pulls in Sirupsen/sirupsen logrus mess).
+const netlabelGenericData = "com.docker.network.generic"
+
+func parseNetworkOptions(id string, option map[string]interface{}) (map[string]string, error) {
 
 	// parse generic labels first
-	genData, ok := option[netlabel.GenericData]
+	genData, ok := option[netlabelGenericData]
 	if ok && genData != nil {
 		options, err := parseNetworkGenericOptions(genData)
 
@@ -293,12 +296,6 @@ func (d *driver) CreatePersistentNetworks() error {
 	}
 
 	for _, n := range nwList {
-		if false && IsNetworkIdValid(n.NetworkID) == false {
-			nwDir := filepath.Join(persistConfigPath, n.NetworkID)
-			os.RemoveAll(nwDir)
-			log.Println("Skipping and deleting stale network: ", n.NetworkID)
-			continue
-		}
 		options, _ := BuildNetworkOptions(&n.Info)
 
 		ipv4Data := network.IPAMData{}
@@ -321,11 +318,15 @@ func (d *driver) ValidatePersistentNetworks() error {
 	}
 
 	for _, n := range nwList {
-		if IsNetworkIdValid(n.NetworkID) == false {
+		exists, err := IsNetworkIdValid(n.NetworkID)
+		if err != nil {
+			log.Printf("ValidatePersistentNetworks: skipping %s, dockerd check failed: %v\n", n.NetworkID, err)
+			continue
+		}
+		if !exists {
 			nwDir := filepath.Join(persistConfigPath, n.NetworkID)
 			os.RemoveAll(nwDir)
-			log.Println("Skipping and deleting stale network: ", n.NetworkID)
-			continue
+			log.Println("Deleting stale network (not present in dockerd): ", n.NetworkID)
 		}
 	}
 	return nil
