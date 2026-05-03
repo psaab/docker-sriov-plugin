@@ -165,9 +165,8 @@ func (nw *dpSriovNetwork) AllocVF(parentNetdev string) string {
 	}
 
 	SetVFDefaultMacAddress(nw.genNw.ndevName, vfDir, allocatedDev)
-	if nw.vlan > 0 {
-		SetVFVlan(nw.genNw.ndevName, vfDir, nw.vlan)
-	}
+	// Always reset vlan -- a previously-freed VF may carry a stale tag.
+	SetVFVlan(nw.genNw.ndevName, vfDir, nw.vlan)
 
 	err = SetVFPrivileged(parentNetdev, vfDir, privileged)
 	if err != nil {
@@ -194,6 +193,7 @@ func (nw *dpSriovNetwork) CreateEndpoint(r *network.CreateEndpointRequest) (*net
 		return nil, fmt.Errorf("All devices in use [ %s ].", r.NetworkID)
 	}
 	ndev := &ptEndpoint{
+		id:      r.EndpointID,
 		devName: netdevName,
 		vfName:  netdevName,
 		Address: r.Interface.Address,

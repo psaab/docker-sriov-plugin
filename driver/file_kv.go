@@ -70,11 +70,11 @@ func Write_Nw_Config_to_DB(nwKey string, nw *Db_Network_Info) error {
 func Read_Nw_Config_From_DB(nwKey string) (*Db_Network_Info, error) {
 
 	nwFile := filepath.Join(persistConfigPath, nwKey, "config.json")
-	_, err := os.Lstat(nwFile)
-	if err != nil {
+	if _, err := os.Lstat(nwFile); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, err
-	} else if os.IsNotExist(err) {
-		return nil, nil
 	}
 
 	rawData, err2 := ioutil.ReadFile(nwFile)
@@ -83,12 +83,10 @@ func Read_Nw_Config_From_DB(nwKey string) (*Db_Network_Info, error) {
 	}
 
 	nw := Db_Network_Info{}
-	err = json.Unmarshal(rawData, &nw)
-	if err != nil {
+	if err := json.Unmarshal(rawData, &nw); err != nil {
 		return nil, err
-	} else {
-		return &nw, nil
 	}
+	return &nw, nil
 }
 
 func Del_Nw_Config_From_DB(nwKey string) error {
@@ -123,6 +121,10 @@ func Read_Past_Config(configDir string) ([]*Db_Network, error) {
 		nwInfo, err3 := Read_Nw_Config_From_DB(nwKeys[i].Name())
 		if err3 != nil {
 			return nil, err3
+		}
+		if nwInfo == nil {
+			// stray subdirectory with no config.json -- skip rather than abort
+			continue
 		}
 		nw := Db_Network{}
 		nw.NetworkID = nwKeys[i].Name()

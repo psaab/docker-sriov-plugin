@@ -6,8 +6,6 @@ import (
 	"github.com/docker/go-plugins-helpers/network"
 	"log"
 	"net"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"sync"
@@ -323,11 +321,14 @@ func (d *driver) ValidatePersistentNetworks() error {
 			log.Printf("ValidatePersistentNetworks: skipping %s, dockerd check failed: %v\n", n.NetworkID, err)
 			continue
 		}
-		if !exists {
-			nwDir := filepath.Join(persistConfigPath, n.NetworkID)
-			os.RemoveAll(nwDir)
-			log.Println("Deleting stale network (not present in dockerd): ", n.NetworkID)
+		if exists {
+			continue
 		}
+		// dockerd no longer has this network. Tear down both in-memory
+		// state (refcounts, vlan registration) and on-disk config so a
+		// future CreateNetwork with the same vlan but a fresh nid succeeds.
+		log.Println("Removing stale network (not present in dockerd): ", n.NetworkID)
+		d.DeleteNetwork(&network.DeleteNetworkRequest{NetworkID: n.NetworkID})
 	}
 	return nil
 }
@@ -530,6 +531,7 @@ func (nw *ptNetwork) CreateEndpoint(r *network.CreateEndpointRequest) (*network.
 	}
 
 	ndev := &ptEndpoint{
+		id:      r.EndpointID,
 		devName: nw.genNw.ndevName,
 		Address: r.Interface.Address,
 	}

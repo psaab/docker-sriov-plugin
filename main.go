@@ -22,13 +22,17 @@ func Run(ctx *cli.Context) error {
 	h := network.NewHandler(d)
 
 	log.Printf("Mellanox sriov plugin started version=%v\n", version)
-	log.Printf("Ready to accept commands.\n")
 
-	go d.ValidatePersistentNetworks()
+	// Reconcile persisted state with dockerd before accepting traffic
+	// so the first CreateNetwork from dockerd doesn't race with cleanup.
+	if err := d.ValidatePersistentNetworks(); err != nil {
+		log.Printf("ValidatePersistentNetworks: %v\n", err)
+	}
+
+	log.Printf("Ready to accept commands.\n")
 	err = h.ServeUnix("sriov", 0)
 	if err != nil {
-		log.Fatal("Run app error: %s", err.Error())
-		os.Exit(1)
+		log.Fatalf("Run app error: %s", err.Error())
 	}
 	return err
 }

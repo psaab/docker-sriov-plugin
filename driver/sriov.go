@@ -260,9 +260,9 @@ func (nw *sriovNetwork) CreateEndpoint(r *network.CreateEndpointRequest) (*netwo
 		}
 	}
 
-	if nw.vlan > 0 {
-		sriovnet.SetVfVlan(dev.pfHandle, vfObj, nw.vlan)
-	}
+	// Always reset vlan -- a previously-freed VF may still carry a stale
+	// vlan tag from its prior tenant. Passing 0 clears any tag.
+	sriovnet.SetVfVlan(dev.pfHandle, vfObj, nw.vlan)
 
 	err2 := sriovnet.SetVfPrivileged(dev.pfHandle, vfObj, privileged)
 	if err2 != nil {
@@ -280,6 +280,7 @@ func (nw *sriovNetwork) CreateEndpoint(r *network.CreateEndpointRequest) (*netwo
 	log.Printf("AllocVF PF [ %+v ] vf:%v\n", nw.genNw.ndevName, vfObj)
 
 	ndev := &ptEndpoint{
+		id:      r.EndpointID,
 		devName: devName,
 		vfObj:   vfObj,
 		Address: r.Interface.Address,
