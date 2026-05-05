@@ -84,6 +84,13 @@ func createGenNw(nid string, ndevName string,
 	genNw.IPv4Data = ipv4Data
 	genNw.ndevEndpoints = ndevs
 	genNw.ndevName = ndevName
+	if ethPrefix == "" {
+		// Older persisted configs (pre-EthPrefix field) reload with an
+		// empty prefix; libnetwork would then rename the container netdev
+		// to just "<index>" (e.g. "0"). Default to the same value
+		// parseNetworkGenericOptions uses for fresh networks.
+		ethPrefix = containerVethPrefix
+	}
 	genNw.ethPrefix = ethPrefix
 
 	return &genNw
@@ -205,6 +212,7 @@ func (d *driver) _CreateNetwork(nid string, options map[string]string,
 		nwDbEntry.Netdev = options[networkDevice]
 		nwDbEntry.Vlan, _ = strconv.Atoi(options[sriovVlan])
 		nwDbEntry.Gateway = ipv4Data.Gateway
+		nwDbEntry.EthPrefix = options[ethPrefix]
 
 		if options[networkPrivileged] == "1" {
 			nwDbEntry.Privileged = true
@@ -281,6 +289,7 @@ func BuildNetworkOptions(nwDbEntry *Db_Network_Info) (map[string]string, error) 
 	options[networkDevice] = nwDbEntry.Netdev
 	options[networkMode] = nwDbEntry.Mode
 	options[sriovVlan] = strconv.Itoa(nwDbEntry.Vlan)
+	options[ethPrefix] = nwDbEntry.EthPrefix
 	if nwDbEntry.Privileged {
 		options[networkPrivileged] = "1"
 	} else {
