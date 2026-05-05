@@ -23,11 +23,12 @@ func Run(ctx *cli.Context) error {
 
 	log.Printf("Mellanox sriov plugin started version=%v\n", version)
 
-	// Reconcile persisted state with dockerd before accepting traffic
-	// so the first CreateNetwork from dockerd doesn't race with cleanup.
-	if err := d.ValidatePersistentNetworks(); err != nil {
-		log.Printf("ValidatePersistentNetworks: %v\n", err)
-	}
+	// Reconcile persisted state with dockerd in the background. This MUST
+	// run concurrently with ServeUnix: at boot dockerd's container-restore
+	// is blocked waiting for our plugin socket, so calling NetworkList
+	// inline would deadlock. d.Mutex serializes any DeleteNetwork the
+	// reconciliation issues against incoming dockerd requests.
+	go d.ValidatePersistentNetworksLoop()
 
 	log.Printf("Ready to accept commands.\n")
 	err = h.ServeUnix("sriov", 0)

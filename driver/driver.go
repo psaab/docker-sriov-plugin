@@ -1,6 +1,7 @@
 package driver
 
 import (
+	"context"
 	"fmt"
 	"github.com/k8snetworkplumbingwg/sriovnet"
 	"github.com/docker/go-plugins-helpers/network"
@@ -9,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"time"
 )
 
 const (
@@ -309,28 +311,61 @@ func (d *driver) CreatePersistentNetworks() error {
 	return nil
 }
 
-func (d *driver) ValidatePersistentNetworks() error {
+// ValidatePersistentNetworks does a single reconciliation pass: any persisted
+// network whose id is unknown to dockerd is torn down (in-memory refcounts,
+// vlan registration, and on-disk config) so a future CreateNetwork with the
+// same vlan but a fresh nid succeeds. Returns an error if dockerd cannot be
+// queried -- the caller is expected to retry, since acting on a partial view
+// would risk deleting live config.
+func (d *driver) ValidatePersistentNetworks(ctx context.Context) error {
 	nwList, err := Read_Past_Config(persistConfigPath)
 	if err != nil {
 		return err
 	}
+	if len(nwList) == 0 {
+		return nil
+	}
+
+	known, err := ListDockerNetworkIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("listing dockerd networks: %w", err)
+	}
 
 	for _, n := range nwList {
-		exists, err := IsNetworkIdValid(n.NetworkID)
-		if err != nil {
-			log.Printf("ValidatePersistentNetworks: skipping %s, dockerd check failed: %v\n", n.NetworkID, err)
+		if _, ok := known[n.NetworkID]; ok {
 			continue
 		}
-		if exists {
-			continue
-		}
-		// dockerd no longer has this network. Tear down both in-memory
-		// state (refcounts, vlan registration) and on-disk config so a
-		// future CreateNetwork with the same vlan but a fresh nid succeeds.
-		log.Println("Removing stale network (not present in dockerd): ", n.NetworkID)
+		log.Println("Removing stale network (not present in dockerd):", n.NetworkID)
 		d.DeleteNetwork(&network.DeleteNetworkRequest{NetworkID: n.NetworkID})
 	}
 	return nil
+}
+
+// ValidatePersistentNetworksLoop retries ValidatePersistentNetworks with
+// capped exponential backoff until it succeeds. Must run in its own
+// goroutine: at boot, dockerd's container-restore is itself blocked waiting
+// for our plugin socket, so calling NetworkList inline would deadlock.
+func (d *driver) ValidatePersistentNetworksLoop() {
+	const (
+		callTimeout = 30 * time.Second
+		maxBackoff  = 30 * time.Second
+	)
+	backoff := time.Second
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		err := d.ValidatePersistentNetworks(ctx)
+		cancel()
+		if err == nil {
+			log.Println("ValidatePersistentNetworks: completed")
+			return
+		}
+		log.Printf("ValidatePersistentNetworks: %v (retrying in %s)\n", err, backoff)
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
 }
 
 

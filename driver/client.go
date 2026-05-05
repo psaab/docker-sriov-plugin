@@ -10,24 +10,25 @@ func getRightClient() (*client.Client, error) {
 	return client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 }
 
-// IsNetworkIdValid reports whether the given network id exists in dockerd.
-// The bool result is only meaningful when err == nil; on any error
-// (e.g. dockerd unreachable) callers must NOT treat the network as stale,
-// since deleting persisted config on a transient failure would be destructive.
-func IsNetworkIdValid(id string) (bool, error) {
+// ListDockerNetworkIDs returns the set of network IDs currently known to
+// dockerd. The caller-supplied context bounds the round-trip so a single
+// hang can't wedge validation forever. On any error the caller must NOT
+// treat absent ids as stale -- deleting persisted config on a transient
+// dockerd failure would be destructive.
+func ListDockerNetworkIDs(ctx context.Context) (map[string]struct{}, error) {
 	cli, err := getRightClient()
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	networks, err := cli.NetworkList(context.Background(), types.NetworkListOptions{})
-	if err != nil {
-		return false, err
-	}
+	defer cli.Close()
 
-	for _, network := range networks {
-		if network.ID == id {
-			return true, nil
-		}
+	networks, err := cli.NetworkList(ctx, types.NetworkListOptions{})
+	if err != nil {
+		return nil, err
 	}
-	return false, nil
+	ids := make(map[string]struct{}, len(networks))
+	for _, n := range networks {
+		ids[n.ID] = struct{}{}
+	}
+	return ids, nil
 }
